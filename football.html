@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Neon Striker</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.10.1/nipplejs.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&display=swap" rel="stylesheet">
+    <style>
+        body {
+            background-color: #0a0a0a;
+            color: white;
+            font-family: 'Orbitron', sans-serif;
+            text-align: center;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            touch-action: none; /* Prevents pull-to-refresh on mobile */
+            overflow: hidden;
+        }
+        h1 {
+            color: #00d2ff;
+            text-shadow: 0 0 10px rgba(0, 210, 255, 0.5);
+            margin-bottom: 10px;
+        }
+        canvas {
+            border: 4px solid #333;
+            box-shadow: 0 0 40px rgba(0, 255, 100, 0.2);
+            border-radius: 12px;
+            cursor: pointer;
+            background-color: #111;
+        }
+        #status {
+            margin-top: 15px;
+            color: #888;
+            font-family: sans-serif;
+            letter-spacing: 1px;
+        }
+        #joystick-zone {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 200px;
+            height: 150px;
+            display: none; 
+        }
+
+        @media (max-width: 850px) {
+            #joystick-zone { display: block; }
+            canvas { width: 100%; height: auto; }
+            h1 { font-size: 1.5em; }
+        }
+    </style>
+</head>
+<body>
+
+    <h1>NEON STRIKER</h1>
+    <canvas id="gameCanvas" width="800" height="450"></canvas>
+    <div id="joystick-zone"></div>
+    <div id="status">Select a mode to play.</div>
+
+<script>
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+    let socket;
+
+    let gameState = "MENU"; 
+
+    let player = { x: 200, y: 225, radius: 20, speed: 5, color: "#00d2ff", skin: "#ffcc99", score: 0, angle: 0 };
+    let opponent = { x: 600, y: 225, radius: 20, speed: 2.5, color: "#ff0055", skin: "#ffcc99", score: 0, angle: Math.PI };
+    let ball = { x: 400, y: 225, radius: 10, vx: 0, vy: 0, color: "white", friction: 0.97 };
+
+    const goalWidth = 140;
+    
+    let matchTimer = 180;
+    let aiTimerInterval;
+    let winnerMessage = "";
+    let serverStatus = "WAITING"; 
+
+    const keys = {};
+    window.addEventListener("keydown", (e) => keys[e.key] = true);
+    window.addEventListener("keyup", (e) => keys[e.key] = false);
+
+    function formatTime(seconds) {
+        let m = Math.floor(seconds / 60);
+        let s = seconds % 60;
+        return `0${m}:${s < 10 ? '0' + s : s}`;
+    }
+
+    canvas.addEventListener("mousedown", (e) => {
+        if (gameState !== "MENU") return;
+        
+        const rect = canvas.getBoundingClientRect();
+        // Adjust mouse coordinates for CSS scaling on mobile
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        const mx = (e.clientX - rect.left) * scaleX;
+        const my = (e.clientY - rect.top) * scaleY;
+
+        if (mx > 250 && mx < 550 && my > 150 && my < 210) startAI();
+        if (mx > 250 && mx < 550 && my > 250 && my < 310) startOnline();
+    });
+
+    function startAI() {
+        gameState = "AI_PLAYING";
+        matchTimer = 180;
+        player.score = 0; opponent.score = 0;
+        resetPositions();
+        document.getElementById("status").innerText = "Match started! 3 Minutes on the clock.";
+        
+        clearInterval(aiTimerInterval);
+        aiTimerInterval = setInterval(() => {
+            if (gameState === "AI_PLAYING") {
+                matchTimer--;
+                if (matchTimer <= 0) {
+                    gameState = "AI_GAMEOVER";
+                    if (player.score > opponent.score) winnerMessage = "BLUE WINS!";
+                    else if (opponent.score > player.score) winnerMessage = "RED WINS!";
+                    else winnerMessage = "IT'S A DRAW!";
+                    setTimeout(() => { gameState = "MENU"; }, 5000);
+                }
+            }
+        }, 1000);
+    }
+
+    function startOnline() {
+        gameState = "ONLINE";
+        document.getElementById("status").innerText = "Connecting to server...";
+        
+        // Blank URL so it auto-connects to the domain it's hosted on
+        socket = io(); 
+
+        socket.on("connect", () => {
+            document.getElementById("status").innerText = "Connected! Waiting for opponent...";
+        });
+
+        socket.on("gameStateUpdate", (serverState) => {
+            player = serverState.players[socket.id] || player;
+            const opponentId = Object.keys(serverState.players).find(id => id !== socket.id);
+            if (opponentId) opponent = serverState.players[opponentId];
+            
+            ball = serverState.ball;
+            matchTimer = serverState.timer;
+            serverStatus = serverState.status;
+            winnerMessage = serverState.winnerMessage;
+
+            if (serverStatus === "PLAYING") document.getElementById("status").innerText = "Match Live!";
+        });
+    }
+
+    function resetPositions() {
+        player.x = 200; player.y = 225;
+        opponent.x = 600; opponent.y = 225;
+        ball.x = 400; ball.y = 225;
+        ball.vx = 0; ball.vy = 0;
+    }
+
+    function circleCollision(obj1, obj2) {
+        let dx = obj2.x - obj1.x; let dy = obj2.y - obj1.y;
+        let distance = Math.sqrt(dx * dx + dy * dy);
+        if (distance === 0) { dx = 0.1; dy = 0.1; distance = 0.14; }
+
+        if (distance < obj1.radius + obj2.radius) {
+            let angle = Math.atan2(dy, dx);
+            ball.vx += Math.cos(angle) * 6;
+            ball.vy += Math.sin(angle) * 6;
+            
+            let overlap = (obj1.radius + obj2.radius) - distance;
+            ball.x += Math.cos(angle) * overlap;
+            ball.y += Math.sin(angle) * overlap;
+        }
+    }
+
+    function updateAI() {
+        if (gameState !== "AI_PLAYING") return; 
+
+        let dx = 0; let dy = 0;
+        if (keys["ArrowUp"] && player.y > player.radius) dy -= player.speed;
+        if (keys["ArrowDown"] && player.y < canvas.height - player.radius) dy += player.speed;
+        if (keys["ArrowLeft"] && player.x > player.radius) dx -= player.speed;
+        if (keys["ArrowRight"] && player.x < canvas.width - player.radius) dx += player.speed;
+        
+        player.x += dx; player.y += dy;
+        if (dx !== 0 || dy !== 0) player.angle = Math.atan2(dy, dx);
+
+        let aiDx = ball.x - opponent.x; let aiDy = ball.y - opponent.y;
+        let aiDist = Math.sqrt(aiDx * aiDx + aiDy * aiDy);
+        
+        if (aiDist > 5) {
+            opponent.x += (aiDx / aiDist) * opponent.speed;
+            opponent.y += (aiDy / aiDist) * opponent.speed;
+            opponent.angle = Math.atan2(aiDy, aiDx);
+        }
+
+        ball.vx *= ball.friction; ball.vy *= ball.friction;
+        ball.x += ball.vx; ball.y += ball.vy;
+        
+        if (ball.y < ball.radius || ball.y > canvas.height - ball.radius) {
+            ball.vy *= -1; ball.y = ball.y < ball.radius ? ball.radius : canvas.height - ball.radius;
+        }
+        
+        if (ball.x < ball.radius) {
+            if (ball.y > canvas.height/2 - goalWidth/2 && ball.y < canvas.height/2 + goalWidth/2) { 
+                opponent.score++; resetPositions();
+            } else { ball.vx *= -1; ball.x = ball.radius; }
+        }
+
+        if (ball.x > canvas.width - ball.radius) {
+            if (ball.y > canvas.height/2 - goalWidth/2 && ball.y < canvas.height/2 + goalWidth/2) { 
+                player.score++; resetPositions();
+            } else { ball.vx *= -1; ball.x = canvas.width - ball.radius; }
+        }
+
+        circleCollision(player, ball); circleCollision(opponent, ball);
+    }
+
+    function drawMenu() {
+        ctx.fillStyle = "#1a2a22"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "white"; ctx.font = "bold 50px 'Orbitron'"; ctx.textAlign = "center";
+        ctx.fillText("MAIN MENU", canvas.width / 2, 100);
+
+        ctx.fillStyle = "#00d2ff"; ctx.fillRect(250, 150, 300, 60);
+        ctx.fillStyle = "#111"; ctx.font = "24px 'Orbitron'"; ctx.fillText("VS COMPUTER", canvas.width / 2, 188);
+
+        ctx.fillStyle = "#ff0055"; ctx.fillRect(250, 250, 300, 60);
+        ctx.fillStyle = "white"; ctx.fillText("PLAY ONLINE", canvas.width / 2, 288);
+    }
+
+    function drawScoreboard(timerVal) {
+        ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+        ctx.beginPath(); ctx.roundRect(canvas.width/2 - 150, 10, 300, 60, 10); ctx.fill();
+        
+        ctx.fillStyle = "#00d2ff"; ctx.font = "bold 35px 'Orbitron'"; ctx.textAlign = "right";
+        ctx.fillText(player.score, canvas.width / 2 - 80, 52);
+        
+        ctx.fillStyle = "#ff0055"; ctx.textAlign = "left";
+        ctx.fillText(opponent.score, canvas.width / 2 + 80, 52);
+        
+        ctx.fillStyle = "white"; ctx.font = "24px 'Orbitron'"; ctx.textAlign = "center";
+        ctx.fillText(formatTime(timerVal), canvas.width / 2, 48);
+    }
+
+    function drawGame() {
+        ctx.fillStyle = "#1a3b26"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        for (let i = 0; i < canvas.width; i += 50) {
+            ctx.fillStyle = (i / 50) % 2 === 0 ? "#1e452c" : "#1a3b26";
+            ctx.fillRect(i, 0, 50, canvas.height);
+        }
+        
+        ctx.strokeStyle = "rgba(255,255,255,0.3)"; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.moveTo(400, 0); ctx.lineTo(400, canvas.height); ctx.stroke();
+        ctx.beginPath(); ctx.arc(400, 225, 60, 0, Math.PI * 2); ctx.stroke();
+        
+        ctx.fillStyle = "rgba(0, 210, 255, 0.3)"; ctx.fillRect(0, 225 - goalWidth/2, 20, goalWidth);
+        ctx.fillStyle = "rgba(255, 0, 85, 0.3)"; ctx.fillRect(780, 225 - goalWidth/2, 20, goalWidth);
+
+        [player, opponent].forEach(p => {
+            ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.angle);
+            ctx.shadowBlur = 15; ctx.shadowColor = p.color; 
+            ctx.fillStyle = p.color; ctx.beginPath(); ctx.ellipse(0, 0, 20, 12, 0, 0, Math.PI*2); ctx.fill(); 
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = p.skin; ctx.beginPath(); ctx.arc(5, 0, 10, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+            
+            // Note: The permanent face reference logic can be added here as ctx.drawImage() if desired.
+            
+            ctx.restore();
+        });
+
+        ctx.fillStyle = "white"; ctx.beginPath(); ctx.arc(ball.x, ball.y, 10, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+    }
+
+    function drawGameOver() {
+        ctx.fillStyle = "rgba(0, 0, 0, 0.8)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "white"; ctx.font = "bold 60px 'Orbitron'"; ctx.textAlign = "center";
+        ctx.fillText("TIME'S UP!", canvas.width / 2, canvas.height / 2 - 20);
+        ctx.fillStyle = "#FFD700"; ctx.font = "bold 40px 'Orbitron'"; 
+        ctx.fillText(winnerMessage, canvas.width / 2, canvas.height / 2 + 40);
+    }
+
+    function gameLoop() {
+        if (gameState === "MENU") {
+            drawMenu();
+        } else if (gameState === "AI_PLAYING" || gameState === "AI_GAMEOVER") {
+            updateAI(); drawGame(); drawScoreboard(matchTimer);
+            if (gameState === "AI_GAMEOVER") drawGameOver();
+        } else if (gameState === "ONLINE") {
+            if (socket && socket.connected && serverStatus === "PLAYING") {
+                socket.emit("playerInput", keys);
+            }
+            drawGame(); drawScoreboard(matchTimer);
+            
+            if (serverStatus === "WAITING") {
+                ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(0,0,canvas.width, canvas.height);
+                ctx.fillStyle = "white"; ctx.font = "30px 'Orbitron'"; ctx.textAlign="center";
+                ctx.fillText("WAITING FOR PLAYER 2...", canvas.width/2, canvas.height/2);
+            } else if (serverStatus === "GAMEOVER") {
+                drawGameOver();
+            }
+        }
+        requestAnimationFrame(gameLoop);
+    }
+
+    // --- MOBILE JOYSTICK SETUP ---
+    if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
+        document.getElementById('joystick-zone').style.display = 'block';
+
+        const joystickManager = nipplejs.create({
+            zone: document.getElementById('joystick-zone'),
+            mode: 'static',
+            position: { left: '50%', top: '50%' },
+            color: '#00d2ff',
+            size: 120
+        });
+
+        joystickManager.on('move', (evt, data) => {
+            keys["ArrowRight"] = data.vector.x > 0.3;
+            keys["ArrowLeft"] = data.vector.x < -0.3;
+            keys["ArrowUp"] = data.vector.y > 0.3;    
+            keys["ArrowDown"] = data.vector.y < -0.3; 
+        });
+
+        joystickManager.on('end', () => {
+            keys["ArrowUp"] = false; keys["ArrowDown"] = false;
+            keys["ArrowLeft"] = false; keys["ArrowRight"] = false;
+        });
+    }
+
+    gameLoop();
+</script>
+</body>
+</html>
