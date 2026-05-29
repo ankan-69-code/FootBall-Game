@@ -7,26 +7,25 @@
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.10.1/nipplejs.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&display=swap" rel="stylesheet">
-    <link rel="manifest" href="/manifest.json">
-<meta name="theme-color" content="#00d2ff">
     <style>
         body {
             background-color: #0a0a0a;
             color: white;
             font-family: 'Orbitron', sans-serif;
             text-align: center;
-            margin: 0;
-            padding: 20px;
+            margin: 0; 
+            padding: 10px 0;
             display: flex;
             flex-direction: column;
             align-items: center;
-            touch-action: none; /* Prevents pull-to-refresh on mobile */
-            overflow: hidden;
+            touch-action: none; 
+            overflow: hidden; 
         }
         h1 {
             color: #00d2ff;
             text-shadow: 0 0 10px rgba(0, 210, 255, 0.5);
-            margin-bottom: 10px;
+            margin-bottom: 5px;
+            font-size: 2em;
         }
         canvas {
             border: 4px solid #333;
@@ -34,9 +33,12 @@
             border-radius: 12px;
             cursor: pointer;
             background-color: #111;
+            max-width: 100vw; 
+            max-height: 80vh;
+            object-fit: contain; 
         }
         #status {
-            margin-top: 15px;
+            margin-top: 10px;
             color: #888;
             font-family: sans-serif;
             letter-spacing: 1px;
@@ -53,8 +55,7 @@
 
         @media (max-width: 850px) {
             #joystick-zone { display: block; }
-            canvas { width: 100%; height: auto; }
-            h1 { font-size: 1.5em; }
+            h1 { font-size: 1.2em; }
         }
     </style>
 </head>
@@ -72,8 +73,8 @@
 
     let gameState = "MENU"; 
 
-    let player = { x: 200, y: 225, radius: 20, speed: 5, color: "#00d2ff", skin: "#ffcc99", score: 0, angle: 0 };
-    let opponent = { x: 600, y: 225, radius: 20, speed: 2.5, color: "#ff0055", skin: "#ffcc99", score: 0, angle: Math.PI };
+    let player = { x: 200, y: 225, radius: 20, speed: 3.5, color: "#00d2ff", skin: "#ffcc99", score: 0, angle: 0 };
+    let opponent = { x: 600, y: 225, radius: 20, speed: 3.5, color: "#ff0055", skin: "#ffcc99", score: 0, angle: Math.PI };
     let ball = { x: 400, y: 225, radius: 10, vx: 0, vy: 0, color: "white", friction: 0.97 };
 
     const goalWidth = 140;
@@ -97,7 +98,6 @@
         if (gameState !== "MENU") return;
         
         const rect = canvas.getBoundingClientRect();
-        // Adjust mouse coordinates for CSS scaling on mobile
         const scaleX = canvas.width / rect.width;
         const scaleY = canvas.height / rect.height;
         const mx = (e.clientX - rect.left) * scaleX;
@@ -133,7 +133,6 @@
         gameState = "ONLINE";
         document.getElementById("status").innerText = "Connecting to server...";
         
-        // Blank URL so it auto-connects to the domain it's hosted on
         socket = io(); 
 
         socket.on("connect", () => {
@@ -141,14 +140,45 @@
         });
 
         socket.on("gameStateUpdate", (serverState) => {
-            player = serverState.players[socket.id] || player;
-            const opponentId = Object.keys(serverState.players).find(id => id !== socket.id);
-            if (opponentId) opponent = serverState.players[opponentId];
-            
-            ball = serverState.ball;
             matchTimer = serverState.timer;
             serverStatus = serverState.status;
             winnerMessage = serverState.winnerMessage;
+
+            const myServerData = serverState.players[socket.id];
+            const opponentId = Object.keys(serverState.players).find(id => id !== socket.id);
+            
+            if (myServerData) {
+                player.score = myServerData.score;
+                // Snap to server only if we desync wildly (like after a goal)
+                if (Math.abs(player.x - myServerData.x) > 50) {
+                    player.x = myServerData.x;
+                    player.y = myServerData.y;
+                }
+            }
+            
+            if (opponentId) {
+                let opData = serverState.players[opponentId];
+                // Smooth opponent tracking
+                opponent.x += (opData.x - opponent.x) * 0.3;
+                opponent.y += (opData.y - opponent.y) * 0.3;
+                opponent.angle = opData.angle;
+                opponent.score = opData.score;
+            }
+
+            // BOUNCE FIX: Soft-sync the ball
+            let dist = Math.sqrt(Math.pow(ball.x - serverState.ball.x, 2) + Math.pow(ball.y - serverState.ball.y, 2));
+            if (dist > 30) {
+                // If it's too far off, snap it
+                ball.x = serverState.ball.x;
+                ball.y = serverState.ball.y;
+            } else {
+                // Gently guide it to the server's path
+                ball.x += (serverState.ball.x - ball.x) * 0.2;
+                ball.y += (serverState.ball.y - ball.y) * 0.2;
+            }
+            // Always sync the velocity so bounces curve perfectly
+            ball.vx = serverState.ball.vx;
+            ball.vy = serverState.ball.vy;
 
             if (serverStatus === "PLAYING") document.getElementById("status").innerText = "Match Live!";
         });
@@ -193,8 +223,8 @@
         let aiDist = Math.sqrt(aiDx * aiDx + aiDy * aiDy);
         
         if (aiDist > 5) {
-            opponent.x += (aiDx / aiDist) * opponent.speed;
-            opponent.y += (aiDy / aiDist) * opponent.speed;
+            opponent.x += (aiDx / aiDist) * 2;
+            opponent.y += (aiDy / aiDist) * 2;
             opponent.angle = Math.atan2(aiDy, aiDx);
         }
 
@@ -266,13 +296,10 @@
             ctx.fillStyle = p.color; ctx.beginPath(); ctx.ellipse(0, 0, 20, 12, 0, 0, Math.PI*2); ctx.fill(); 
             ctx.shadowBlur = 0;
             ctx.fillStyle = p.skin; ctx.beginPath(); ctx.arc(5, 0, 10, 0, Math.PI*2); ctx.fill(); ctx.stroke();
-            
-            // Note: The permanent face reference logic can be added here as ctx.drawImage() if desired.
-            
             ctx.restore();
         });
 
-        ctx.fillStyle = "white"; ctx.beginPath(); ctx.arc(ball.x, ball.y, 10, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = "white"; ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI*2); ctx.fill(); ctx.stroke();
     }
 
     function drawGameOver() {
@@ -293,7 +320,38 @@
         } else if (gameState === "ONLINE") {
             if (socket && socket.connected && serverStatus === "PLAYING") {
                 socket.emit("playerInput", keys);
+                
+                let dx = 0; let dy = 0;
+                if (keys["ArrowUp"] && player.y > player.radius) dy -= player.speed;
+                if (keys["ArrowDown"] && player.y < canvas.height - player.radius) dy += player.speed;
+                if (keys["ArrowLeft"] && player.x > player.radius) dx -= player.speed;
+                if (keys["ArrowRight"] && player.x < canvas.width - player.radius) dx += player.speed;
+                
+                player.x += dx; player.y += dy;
+                if (dx !== 0 || dy !== 0) player.angle = Math.atan2(dy, dx);
+
+                // BOUNCE FIX: Local ball physics prediction
+                ball.vx *= ball.friction; 
+                ball.vy *= ball.friction;
+                ball.x += ball.vx; 
+                ball.y += ball.vy;
+
+                // Wall bounces
+                if (ball.y < ball.radius || ball.y > canvas.height - ball.radius) {
+                    ball.vy *= -1; 
+                    ball.y = ball.y < ball.radius ? ball.radius : canvas.height - ball.radius;
+                }
+                if (ball.x < ball.radius && (ball.y <= canvas.height/2 - goalWidth/2 || ball.y >= canvas.height/2 + goalWidth/2)) {
+                    ball.vx *= -1; ball.x = ball.radius;
+                }
+                if (ball.x > canvas.width - ball.radius && (ball.y <= canvas.height/2 - goalWidth/2 || ball.y >= canvas.height/2 + goalWidth/2)) {
+                    ball.vx *= -1; ball.x = canvas.width - ball.radius;
+                }
+
+                // Instant local kick feedback
+                circleCollision(player, ball);
             }
+            
             drawGame(); drawScoreboard(matchTimer);
             
             if (serverStatus === "WAITING") {
@@ -307,7 +365,6 @@
         requestAnimationFrame(gameLoop);
     }
 
-    // --- MOBILE JOYSTICK SETUP ---
     if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
         document.getElementById('joystick-zone').style.display = 'block';
 
