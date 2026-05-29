@@ -136,7 +136,7 @@
         gameState = "ONLINE";
         document.getElementById("status").innerText = "Connecting to server...";
         
-        socket = io(); 
+        socket = io("https://neon-strikers.onrender.com"); 
 
         socket.on("connect", () => {
             document.getElementById("status").innerText = "Connected! Waiting for opponent...";
