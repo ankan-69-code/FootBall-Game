@@ -73,6 +73,7 @@
 
     let gameState = "MENU"; 
 
+    // Initial dummy data
     let player = { x: 200, y: 225, radius: 20, speed: 3.5, color: "#00d2ff", skin: "#ffcc99", score: 0, angle: 0 };
     let opponent = { x: 600, y: 225, radius: 20, speed: 3.5, color: "#ff0055", skin: "#ffcc99", score: 0, angle: Math.PI };
     let ball = { x: 400, y: 225, radius: 10, vx: 0, vy: 0, color: "white", friction: 0.97 };
@@ -110,6 +111,8 @@
     function startAI() {
         gameState = "AI_PLAYING";
         matchTimer = 180;
+        player.color = "#00d2ff"; // Force blue for AI mode
+        opponent.color = "#ff0055"; // Force red for AI mode
         player.score = 0; opponent.score = 0;
         resetPositions();
         document.getElementById("status").innerText = "Match started! 3 Minutes on the clock.";
@@ -147,38 +150,45 @@
             const myServerData = serverState.players[socket.id];
             const opponentId = Object.keys(serverState.players).find(id => id !== socket.id);
             
+            // Sync Player Info
             if (myServerData) {
                 player.score = myServerData.score;
-                // Snap to server only if we desync wildly (like after a goal)
-                if (Math.abs(player.x - myServerData.x) > 50) {
-                    player.x = myServerData.x;
-                    player.y = myServerData.y;
+                player.color = myServerData.color; // <--- FIX: This grabs your correct color from the server!
+                
+                player.targetX = myServerData.x;
+                player.targetY = myServerData.y;
+                
+                // Snap to correct position immediately when game resets
+                if (player.x === 0 || Math.abs(player.targetX - player.x) > 100) {
+                    player.x = player.targetX;
+                    player.y = player.targetY;
                 }
             }
             
+            // Sync Opponent Info
             if (opponentId) {
                 let opData = serverState.players[opponentId];
-                // Smooth opponent tracking
-                opponent.x += (opData.x - opponent.x) * 0.3;
-                opponent.y += (opData.y - opponent.y) * 0.3;
-                opponent.angle = opData.angle;
                 opponent.score = opData.score;
+                opponent.color = opData.color; // <--- FIX: Assures opponent color is correct
+                opponent.angle = opData.angle;
+                
+                opponent.targetX = opData.x;
+                opponent.targetY = opData.y;
+
+                if (opponent.x === 0 || Math.abs(opponent.targetX - opponent.x) > 100) {
+                    opponent.x = opponent.targetX;
+                    opponent.y = opponent.targetY;
+                }
             }
 
-            // BOUNCE FIX: Soft-sync the ball
-            let dist = Math.sqrt(Math.pow(ball.x - serverState.ball.x, 2) + Math.pow(ball.y - serverState.ball.y, 2));
-            if (dist > 30) {
-                // If it's too far off, snap it
-                ball.x = serverState.ball.x;
-                ball.y = serverState.ball.y;
-            } else {
-                // Gently guide it to the server's path
-                ball.x += (serverState.ball.x - ball.x) * 0.2;
-                ball.y += (serverState.ball.y - ball.y) * 0.2;
+            // Sync Ball Info
+            ball.targetX = serverState.ball.x;
+            ball.targetY = serverState.ball.y;
+            
+            if (ball.x === 0 || Math.abs(ball.targetX - ball.x) > 100) {
+                ball.x = ball.targetX;
+                ball.y = ball.targetY;
             }
-            // Always sync the velocity so bounces curve perfectly
-            ball.vx = serverState.ball.vx;
-            ball.vy = serverState.ball.vy;
 
             if (serverStatus === "PLAYING") document.getElementById("status").innerText = "Match Live!";
         });
@@ -319,37 +329,34 @@
             if (gameState === "AI_GAMEOVER") drawGameOver();
         } else if (gameState === "ONLINE") {
             if (socket && socket.connected && serverStatus === "PLAYING") {
+                // Send inputs continuously to the server
                 socket.emit("playerInput", keys);
                 
+                // Update local visual angle instantly so it feels responsive
                 let dx = 0; let dy = 0;
-                if (keys["ArrowUp"] && player.y > player.radius) dy -= player.speed;
-                if (keys["ArrowDown"] && player.y < canvas.height - player.radius) dy += player.speed;
-                if (keys["ArrowLeft"] && player.x > player.radius) dx -= player.speed;
-                if (keys["ArrowRight"] && player.x < canvas.width - player.radius) dx += player.speed;
-                
-                player.x += dx; player.y += dy;
+                if (keys["ArrowUp"]) dy -= 1;
+                if (keys["ArrowDown"]) dy += 1;
+                if (keys["ArrowLeft"]) dx -= 1;
+                if (keys["ArrowRight"]) dx += 1;
                 if (dx !== 0 || dy !== 0) player.angle = Math.atan2(dy, dx);
 
-                // BOUNCE FIX: Local ball physics prediction
-                ball.vx *= ball.friction; 
-                ball.vy *= ball.friction;
-                ball.x += ball.vx; 
-                ball.y += ball.vy;
-
-                // Wall bounces
-                if (ball.y < ball.radius || ball.y > canvas.height - ball.radius) {
-                    ball.vy *= -1; 
-                    ball.y = ball.y < ball.radius ? ball.radius : canvas.height - ball.radius;
+                // FIX FOR THE LAG: Smooth Lerping
+                // Instead of moving the player manually, we smoothly glide EVERYTHING 
+                // to exactly where the server says it should be.
+                if (player.targetX !== undefined) {
+                    player.x += (player.targetX - player.x) * 0.4;
+                    player.y += (player.targetY - player.y) * 0.4;
                 }
-                if (ball.x < ball.radius && (ball.y <= canvas.height/2 - goalWidth/2 || ball.y >= canvas.height/2 + goalWidth/2)) {
-                    ball.vx *= -1; ball.x = ball.radius;
-                }
-                if (ball.x > canvas.width - ball.radius && (ball.y <= canvas.height/2 - goalWidth/2 || ball.y >= canvas.height/2 + goalWidth/2)) {
-                    ball.vx *= -1; ball.x = canvas.width - ball.radius;
+                
+                if (opponent.targetX !== undefined) {
+                    opponent.x += (opponent.targetX - opponent.x) * 0.3;
+                    opponent.y += (opponent.targetY - opponent.y) * 0.3;
                 }
 
-                // Instant local kick feedback
-                circleCollision(player, ball);
+                if (ball.targetX !== undefined) {
+                    ball.x += (ball.targetX - ball.x) * 0.3;
+                    ball.y += (ball.targetY - ball.y) * 0.3;
+                }
             }
             
             drawGame(); drawScoreboard(matchTimer);
